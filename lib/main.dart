@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart'; // Для форматирования даты
-import 'package:path_provider/path_provider.dart'; // Для работы с файлами
-import 'dart:io'; // Для работы с файлами
+import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
 
 // Классы для десериализации JSON остаются без изменений
 class Main {
@@ -33,13 +33,11 @@ class Weather {
 }
 
 class WeatherData {
-  int dt;
   Main main;
   List<Weather> weather;
   String dtTxt;
 
   WeatherData({
-    required this.dt,
     required this.main,
     required this.weather,
     required this.dtTxt,
@@ -47,7 +45,6 @@ class WeatherData {
 
   factory WeatherData.fromJson(Map<String, dynamic> json) {
     return WeatherData(
-      dt: json['dt'],
       main: Main.fromJson(json['main']),
       weather: (json['weather'] as List).map((i) => Weather.fromJson(i)).toList(),
       dtTxt: json['dt_txt'],
@@ -55,60 +52,49 @@ class WeatherData {
   }
 }
 
-class City {
-  String name;
-  int sunrise;
-  int sunset;
+class Place {
+  final String? name;
+  final double lat;
+  final double lon;
+  final int? sunrise;
+  final int? sunset;
 
-  City({required this.name, required this.sunrise, required this.sunset});
+  Place({this.name, this.sunrise, this.sunset, required this.lat, required this.lon});
 
-  factory City.fromJson(Map<String, dynamic> json) {
-    return City(
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'coord': {
+      'lat': lat,
+      'lon': lon,
+    },
+    'sunrise': sunrise,
+    'sunset': sunset,
+  };
+
+  factory Place.fromJson(Map<String, dynamic> json) {
+    return Place(
       name: json['name'],
       sunrise: json['sunrise'],
       sunset: json['sunset'],
+      lat: json['coord']['lat'],
+      lon: json['coord']['lon'],
     );
   }
 }
 
 class ForecastResponse {
-  String cod;
-  int cnt;
   List<WeatherData> list;
-  City city;
+  Place city;
 
   ForecastResponse({
-    required this.cod,
-    required this.cnt,
     required this.list,
     required this.city,
   });
 
   factory ForecastResponse.fromJson(Map<String, dynamic> json) {
     return ForecastResponse(
-      cod: json['cod'],
-      cnt: json['cnt'],
       list: (json['list'] as List).map((i) => WeatherData.fromJson(i)).toList(),
-      city: City.fromJson(json['city']),
-    );
-  }
-}
-
-// Новый класс для хранения городов в JSON
-class SavedCity {
-  final String name;
-
-  SavedCity({required this.name});
-
-  // Преобразование в JSON
-  Map<String, dynamic> toJson() => {
-    'name': name,
-  };
-
-  // Создание объекта из JSON
-  factory SavedCity.fromJson(Map<String, dynamic> json) {
-    return SavedCity(
-      name: json['name'],
+      city: Place.fromJson(json['city']),
     );
   }
 }
@@ -119,22 +105,30 @@ class MyApp extends StatefulWidget {
   _MyAppState createState() => _MyAppState();
 }
 
+Color goodBackgroundColor([DateTime? sunrise, DateTime? sunset]) {
+  if (sunrise == null || sunset == null) {
+    DateTime now = DateTime.now();
+    sunrise = DateTime.utc(now.year, now.month, now.day, 6);
+    sunset = DateTime.utc(now.year, now.month, now.day, 20);
+  }
+
+  DateTime now = DateTime.now();
+  DateTime sunriseStart = sunrise.subtract(Duration(minutes: 20));
+  DateTime sunriseEnd = sunrise.add(Duration(minutes: 20));
+  DateTime sunsetStart = sunset.subtract(Duration(minutes: 20));
+  DateTime sunsetEnd = sunset.add(Duration(minutes: 20));
+  DateTime afterSunset = sunset.add(Duration(hours: 1));
+  return (now.isAfter(sunriseStart) && now.isBefore(sunriseEnd)) ||
+      (now.isAfter(sunsetStart) && now.isBefore(sunsetEnd)) ? Color(0xFFFF7514) :
+  (now.isAfter(sunriseEnd) && now.isBefore(sunsetStart)) ? Color(0xFFEFA94A) :
+  (now.isAfter(sunset) && now.isBefore(afterSunset)) ? Color(0xFF5D9B9B) :
+  Color(0xFFA18594);
+}
+
 class _MyAppState extends State<MyApp> {
-  String cityName = 'Загрузка...';
-  WeatherData? selectedWeatherData; // Выбранное время для контейнера 2
-  List<WeatherData> allForecast = []; // Все отрезки времени
-  Map<String, List<WeatherData>> dailyForecast = {}; // Прогнозы, сгруппированные по дням
-  String selectedDay = ''; // Выбранный день для контейнера 3
-  List<WeatherData> selectedDayForecast = []; // Прогноз для выбранного дня
+  List<Place> places = [];
+  PageController _pageController = PageController();
 
-  Color backgroundColor = Color(0xFF5D9B9B);
-
-  DateTime? sunrise;
-  DateTime? sunset;
-
-  List<SavedCity> cities = []; // Список сохраненных городов
-
-  // Путь к файлу для сохранения городов
   Future<String> get _localPath async {
     final directory = await getApplicationDocumentsDirectory();
     return directory.path;
@@ -145,62 +139,115 @@ class _MyAppState extends State<MyApp> {
     return File('$path/cities.json');
   }
 
-  // Метод для сохранения списка городов в JSON-файл
-  Future<void> saveCitiesToFile(List<SavedCity> cities) async {
-    final file = await _localFile;
-    final jsonString = json.encode(cities.map((city) => city.toJson()).toList());
-    await file.writeAsString(jsonString);
+  Future<void> saveCitiesToFile(List<Place> places) async {
+    try {
+      final file = await _localFile;
+      final jsonString = json.encode(places.map((city) => city.toJson()).toList());
+      await file.writeAsString(jsonString);
+    } catch (e) {
+    }
   }
 
-  // Метод для загрузки списка городов из JSON-файла
-  Future<List<SavedCity>> loadCitiesFromFile() async {
+  Future<List<Place>> loadCitiesFromFile() async {
     try {
       final file = await _localFile;
       final contents = await file.readAsString();
       final List<dynamic> jsonList = json.decode(contents);
-      return jsonList.map((json) => SavedCity.fromJson(json)).toList();
+      return jsonList.map((json) => Place.fromJson(json)).toList();
     } catch (e) {
-      // Если файл не найден или произошла ошибка, возвращаем пустой список
       return [];
     }
   }
 
-  // Установка фона в зависимости от времени суток
-  void setBackgroundColor() {
-    if (sunrise == null || sunset == null) return;
+  @override
+  void initState() {
+    super.initState();
+    loadCitiesFromFile().then((loadedCities) {
+      setState(() {
+        places = loadedCities;
+      });
+    });
 
-    DateTime now = DateTime.now();
-    DateTime sunriseStart = sunrise!.subtract(Duration(minutes: 20));
-    DateTime sunriseEnd = sunrise!.add(Duration(minutes: 20));
-    DateTime sunsetStart = sunset!.subtract(Duration(minutes: 20));
-    DateTime sunsetEnd = sunset!.add(Duration(minutes: 20));
-    DateTime afterSunset = sunset!.add(Duration(hours: 1));
-
-    setState(() {
-      if ((now.isAfter(sunriseStart) && now.isBefore(sunriseEnd)) ||
-          (now.isAfter(sunsetStart) && now.isBefore(sunsetEnd))) {
-        backgroundColor = Color(0xFFFF7514); // Восход или Закат
-      } else if (now.isAfter(sunriseEnd) && now.isBefore(sunsetStart)) {
-        backgroundColor = Color(0xFFEFA94A); // День
-      } else if (now.isAfter(sunset!) && now.isBefore(afterSunset)) {
-        backgroundColor = Color(0xFF5D9B9B); // Час после заката
-      } else {
-        backgroundColor = Color(0xFFA18594); // Ночь
+    // Слушатель для скрытия клавиатуры при перелистывании
+    _pageController.addListener(() {
+      if (_pageController.page != null && _pageController.page! < places.length) {
+        FocusScope.of(context).unfocus();
       }
     });
   }
 
-  // Загрузка данных о погоде
+  void _addCity(Place city) {
+    setState(() {
+      places.add(city);
+      saveCitiesToFile(places);
+      _pageController.jumpToPage(places.length - 1); // Переход к последнему городу
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      home: Scaffold(
+        resizeToAvoidBottomInset: false, // Предотвращаем сжатие интерфейса
+        body: PageView.builder(
+          controller: _pageController,
+          itemCount: places.length + 1, // +1 для страницы добавления
+          itemBuilder: (context, index) {
+            if (index < places.length) {
+              return CityWeatherPage(place: places[index]);
+            } else {
+              return AddCityWidget(
+                backgroundColor: goodBackgroundColor(), // Можно настроить
+                onCityAdded: _addCity,
+              );
+            }
+          },
+        ),
+      ),
+    );
+  }
+}
+
+// Виджет для страницы погоды города
+class CityWeatherPage extends StatefulWidget {
+  final Place place;
+
+  CityWeatherPage({required this.place});
+
+  @override
+  _CityWeatherPageState createState() => _CityWeatherPageState();
+}
+
+class _CityWeatherPageState extends State<CityWeatherPage> {
+  String cityName = 'Загрузка...';
+  WeatherData? selectedWeatherData;
+  List<WeatherData> allForecast = [];
+  Map<String, List<WeatherData>> dailyForecast = {};
+  String selectedDay = '';
+  List<WeatherData> selectedDayForecast = [];
+  Color backgroundColor = goodBackgroundColor();
+  DateTime? sunrise;
+  DateTime? sunset;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchWeatherData();
+  }
+
+  void setBackgroundColor() {
+    setState(() {
+      backgroundColor = goodBackgroundColor(sunrise, sunset);
+    });
+  }
+
   Future<void> fetchWeatherData() async {
     final response = await http.get(Uri.parse(
-        'http://api.openweathermap.org/data/2.5/forecast?lat=54.3107593&lon=48.3642771&appid=8aa58f5bf4b1fb19445883a8b8b769a0&lang=ru'));
+        'http://api.openweathermap.org/data/2.5/forecast?lat=${widget.place.lat}&lon=${widget.place.lon}&appid=8aa58f5bf4b1fb19445883a8b8b769a0&lang=ru'));
     if (response.statusCode == 200) {
       final forecast = ForecastResponse.fromJson(json.decode(response.body));
-
-      // Сначала сохраняем все отрезки времени в один список
       List<WeatherData> allData = forecast.list;
 
-      // Группируем данные по дням
       Map<String, List<WeatherData>> groupedByDay = {};
       for (var data in allData) {
         String day = data.dtTxt.split(' ')[0];
@@ -210,259 +257,355 @@ class _MyAppState extends State<MyApp> {
         groupedByDay[day]!.add(data);
       }
 
-      // Находим ближайшее текущее время
       DateTime now = DateTime.now();
       WeatherData? currentWeather = allData.firstWhere(
             (data) => DateTime.parse(data.dtTxt).isAfter(now),
         orElse: () => allData.first,
       );
-
-      setState(() {
-        cityName = forecast.city.name;
-        allForecast = allData;
-        dailyForecast = groupedByDay;
-
-        // Устанавливаем текущий день и ближайшее время по умолчанию
-        selectedDay = groupedByDay.keys.first;
-        selectedDayForecast = groupedByDay[selectedDay]!;
-        selectedWeatherData = currentWeather;
-
-        sunrise = DateTime.fromMillisecondsSinceEpoch(forecast.city.sunrise * 1000, isUtc: true).toLocal();
-        sunset = DateTime.fromMillisecondsSinceEpoch(forecast.city.sunset * 1000, isUtc: true).toLocal();
-
-        setBackgroundColor();
-      });
-
-      // Сохраняем город, если его еще нет в списке
-      if (!cities.any((city) => city.name == forecast.city.name)) {
-        cities.add(SavedCity(name: forecast.city.name));
-        await saveCitiesToFile(cities);
+      if (mounted) {
+        setState(() {
+          cityName = forecast.city.name ?? "Какое-то место";
+          allForecast = allData;
+          dailyForecast = groupedByDay;
+          selectedDay = groupedByDay.keys.first;
+          selectedDayForecast = groupedByDay[selectedDay]!;
+          selectedWeatherData = currentWeather;
+          sunrise = DateTime.fromMillisecondsSinceEpoch(forecast.city.sunrise! * 1000, isUtc: true).toLocal();
+          sunset = DateTime.fromMillisecondsSinceEpoch(forecast.city.sunset! * 1000, isUtc: true).toLocal();
+          setBackgroundColor();
+        });
       }
     } else {
-      print('Ошибка при загрузке данных: ${response.statusCode}');
       setState(() {
-        sunrise = DateTime.parse("2023-10-17 06:00:00");
-        sunset = DateTime.parse("2023-10-17 18:00:00");
-        setBackgroundColor();
+        cityName = 'Ошибка загрузки';
       });
     }
   }
 
   @override
-  void initState() {
-    super.initState();
-    // Загружаем список городов при запуске приложения
-    loadCitiesFromFile().then((loadedCities) {
+  Widget build(BuildContext context) {
+    return Scaffold(
+      resizeToAvoidBottomInset: false, // Предотвращаем сжатие интерфейса
+      backgroundColor: backgroundColor,
+      appBar: AppBar(
+        title: Text('Погода'),
+        backgroundColor: Colors.grey.withOpacity(0.3),
+        elevation: 0,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            Flexible(
+              flex: 2,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(16.0),
+                  border: Border.all(color: Colors.grey[600]!, width: 2.0),
+                ),
+                child: Center(
+                  child: Text(
+                    cityName,
+                    style: TextStyle(fontSize: 24, color: Colors.white),
+                  ),
+                ),
+              ),
+            ),
+            SizedBox(height: 10),
+            Flexible(
+              flex: 5,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(16.0),
+                  border: Border.all(color: Colors.grey[600]!, width: 2.0),
+                ),
+                child: Center(
+                  child: selectedWeatherData != null
+                      ? Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        '${(selectedWeatherData!.main.temp - 273.15).toStringAsFixed(1)}°C',
+                        style: TextStyle(fontSize: 48, color: Colors.white),
+                      ),
+                      Text(
+                        'Ощущается как: ${(selectedWeatherData!.main.feelsLike - 273.15).toStringAsFixed(1)}°C',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      Text(
+                        'Влажность: ${selectedWeatherData!.main.humidity}%',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      Text(
+                        'Описание: ${selectedWeatherData!.weather[0].description}',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ],
+                  )
+                      : Text(
+                    'Загрузка...',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+              ),
+            ),
+            SizedBox(height: 10),
+            Flexible(
+              flex: 4,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(16.0),
+                  border: Border.all(color: Colors.grey[600]!, width: 2.0),
+                ),
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: selectedDayForecast.length,
+                  itemBuilder: (context, index) {
+                    final data = selectedDayForecast[index];
+                    final celsius = (data.main.temp - 273.15).toStringAsFixed(1);
+                    final time = data.dtTxt.split(' ')[1].substring(0, 5);
+                    return GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          selectedWeatherData = data;
+                        });
+                      },
+                      child: Container(
+                        width: 100,
+                        margin: EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: selectedWeatherData == data
+                              ? Colors.blueAccent.withOpacity(0.5)
+                              : Colors.grey.withOpacity(0.3),
+                          borderRadius: BorderRadius.circular(12.0),
+                          border: Border.all(color: Colors.grey[600]!, width: 2.0),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              time,
+                              style: TextStyle(color: Colors.white),
+                            ),
+                            Text(
+                              '$celsius°C',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+            SizedBox(height: 10),
+            Flexible(
+              flex: 4,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(16.0),
+                  border: Border.all(color: Colors.grey[600]!, width: 2.0),
+                ),
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: dailyForecast.keys.length,
+                  itemBuilder: (context, index) {
+                    final day = dailyForecast.keys.toList()[index];
+                    final dayData = dailyForecast[day]!;
+                    final avgTemp = dayData.map((e) => e.main.temp).reduce((a, b) => a + b) / dayData.length;
+                    final celsius = (avgTemp - 273.15).toStringAsFixed(1);
+                    final date = DateFormat('d MMM').format(DateTime.parse(day));
+                    return GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          selectedDay = day;
+                          selectedDayForecast = dayData;
+                          selectedWeatherData = dayData.first;
+                        });
+                      },
+                      child: Container(
+                        width: 100,
+                        margin: EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: selectedDay == day
+                              ? Colors.blueAccent.withOpacity(0.5)
+                              : Colors.grey.withOpacity(0.3),
+                          borderRadius: BorderRadius.circular(12.0),
+                          border: Border.all(color: Colors.grey[600]!, width: 2.0),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              date,
+                              style: TextStyle(color: Colors.white),
+                            ),
+                            Text(
+                              '$celsius°C',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+            SizedBox(height: 10),
+            Flexible(
+              flex: 1,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  border: Border.all(color: Colors.grey[600]!, width: 2.0),
+                ),
+                child: Center(
+                  child: Text(
+                    '<—————————————————>',
+                    style: TextStyle(fontSize: 24, color: Colors.white),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Виджет добавления города
+class AddCityWidget extends StatefulWidget {
+  final Color backgroundColor;
+  final Function(Place) onCityAdded;
+
+  const AddCityWidget({required this.backgroundColor, required this.onCityAdded});
+
+  @override
+  _AddCityWidgetState createState() => _AddCityWidgetState();
+}
+
+class _AddCityWidgetState extends State<AddCityWidget> {
+  final TextEditingController _controller = TextEditingController();
+  String _errorMessage = '';
+
+  void _addCity() async {
+    final cityName = _controller.text;
+    if (cityName.isEmpty) {
       setState(() {
-        cities = loadedCities;
+        _errorMessage = 'Введите название города';
       });
-      // Загружаем погоду для первого города или по умолчанию
-      fetchWeatherData();
-    });
+      return;
+    }
+
+    final response = await http.get(Uri.parse(
+        'http://api.openweathermap.org/geo/1.0/direct?q=$cityName&limit=1&appid=8aa58f5bf4b1fb19445883a8b8b769a0'));
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      if (data.isNotEmpty) {
+        final city = Place(
+          name: data[0]['name'],
+          lat: data[0]['lat'],
+          lon: data[0]['lon'],
+        );
+        widget.onCityAdded(city);
+        _controller.clear();
+        setState(() {
+          _errorMessage = '';
+        });
+      } else {
+        setState(() {
+          _errorMessage = 'Город не найден';
+        });
+      }
+    } else {
+      setState(() {
+        _errorMessage = 'Ошибка при получении данных';
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      home: Scaffold(
-        backgroundColor: backgroundColor, // Основной фон приложения
-        appBar: AppBar(
-          title: Text('Погода'),
-          backgroundColor: Colors.grey.withOpacity(0.3), // Полупрозрачный AppBar
-          elevation: 0, // Убираем тень
-        ),
-        body: Padding(
-          padding: const EdgeInsets.all(16.0), // Отступы по краям экрана
-          child: Column(
-            children: [
-              // Контейнер 1: Название города (2 части)
-              Flexible(
-                flex: 2,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.grey.withOpacity(0.3), // Полупрозрачный серый фон
-                    borderRadius: BorderRadius.circular(16.0),
-                    border: Border.all(color: Colors.grey[600]!, width: 2.0), // Выделенные края
-                  ),
-                  child: Center(
-                    child: Text(
-                      cityName,
-                      style: TextStyle(fontSize: 24, color: Colors.white), // Белый текст
-                    ),
+    return Scaffold(
+      resizeToAvoidBottomInset: false, // Предотвращаем сжатие интерфейса
+      backgroundColor: widget.backgroundColor,
+      appBar: AppBar(
+        title: Text('Добавить город'),
+        backgroundColor: Colors.grey.withOpacity(0.3),
+        elevation: 0,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            Flexible(
+              flex: 2,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(16.0),
+                  border: Border.all(color: Colors.grey[600]!, width: 2.0),
+                ),
+                child: const Center(
+                  child: Text(
+                    'Добавить новый город',
+                    style: TextStyle(fontSize: 24, color: Colors.white),
                   ),
                 ),
               ),
-              SizedBox(height: 10), // Отступ между контейнерами
-
-              // Контейнер 2: Полная информация о выбранном времени
-              Flexible(
-                flex: 5,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.grey.withOpacity(0.3), // Полупрозрачный серый фон
-                    borderRadius: BorderRadius.circular(16.0),
-                    border: Border.all(color: Colors.grey[600]!, width: 2.0), // Выделенные края
-                  ),
-                  child: Center(
-                    child: selectedWeatherData != null
-                        ? Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          '${(selectedWeatherData!.main.temp - 273.15).toStringAsFixed(1)}°C',
-                          style: TextStyle(fontSize: 48, color: Colors.white),
-                        ),
-                        Text(
-                          'Ощущается как: ${(selectedWeatherData!.main.feelsLike - 273.15).toStringAsFixed(1)}°C',
-                          style: TextStyle(color: Colors.white),
-                        ),
-                        Text(
-                          'Влажность: ${selectedWeatherData!.main.humidity}%',
-                          style: TextStyle(color: Colors.white),
-                        ),
-                        Text(
-                          'Описание: ${selectedWeatherData!.weather[0].description}',
-                          style: TextStyle(color: Colors.white),
-                        ),
-                      ],
-                    )
-                        : Text(
-                      'Загрузка...',
-                      style: TextStyle(color: Colors.white),
-                    ),
-                  ),
+            ),
+            const SizedBox(height: 10),
+            Flexible(
+              flex: 5,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(16.0),
+                  border: Border.all(color: Colors.grey[600]!, width: 2.0),
                 ),
-              ),
-              SizedBox(height: 10), // Отступ между контейнерами
-
-              // Контейнер 3: Времена для выбранного дня
-              Flexible(
-                flex: 4,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.grey.withOpacity(0.3), // Полупрозрачный серый фон
-                    borderRadius: BorderRadius.circular(16.0),
-                    border: Border.all(color: Colors.grey[600]!, width: 2.0), // Выделенные края
-                  ),
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: selectedDayForecast.length,
-                    itemBuilder: (context, index) {
-                      final data = selectedDayForecast[index];
-                      final celsius = (data.main.temp - 273.15).toStringAsFixed(1);
-                      final time = data.dtTxt.split(' ')[1].substring(0, 5);
-                      return GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            selectedWeatherData = data;
-                          });
-                        },
-                        child: Container(
-                          width: 100,
-                          margin: EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: selectedWeatherData == data
-                                ? Colors.blueAccent.withOpacity(0.5)
-                                : Colors.grey.withOpacity(0.3),
-                            borderRadius: BorderRadius.circular(12.0),
-                            border: Border.all(color: Colors.grey[600]!, width: 2.0),
-                          ),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text(
-                                time,
-                                style: TextStyle(color: Colors.white),
-                              ),
-                              Text(
-                                '$celsius°C',
-                                style: TextStyle(color: Colors.white),
-                              ),
-                            ],
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      TextField(
+                        controller: _controller,
+                        decoration: const InputDecoration(
+                          hintText: 'Введите название города',
+                          hintStyle: TextStyle(color: Colors.white),
+                          border: OutlineInputBorder(),
+                        ),
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      const SizedBox(height: 20),
+                      ElevatedButton(
+                        onPressed: _addCity,
+                        child: const Text('Добавить'),
+                      ),
+                      if (_errorMessage.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 20),
+                          child: Text(
+                            _errorMessage,
+                            style: const TextStyle(color: Colors.red),
                           ),
                         ),
-                      );
-                    },
+                    ],
                   ),
                 ),
               ),
-              SizedBox(height: 10), // Отступ между контейнерами
-
-              // Контейнер 4: Дни для выбора
-              Flexible(
-                flex: 4,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.grey.withOpacity(0.3), // Полупрозрачный серый фон
-                    borderRadius: BorderRadius.circular(16.0),
-                    border: Border.all(color: Colors.grey[600]!, width: 2.0), // Выделенные края
-                  ),
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: dailyForecast.keys.length,
-                    itemBuilder: (context, index) {
-                      final day = dailyForecast.keys.toList()[index];
-                      final dayData = dailyForecast[day]!;
-                      final avgTemp = dayData.map((e) => e.main.temp).reduce((a, b) => a + b) / dayData.length;
-                      final celsius = (avgTemp - 273.15).toStringAsFixed(1);
-                      final date = DateFormat('d MMM').format(DateTime.parse(day));
-                      return GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            selectedDay = day;
-                            selectedDayForecast = dayData;
-                            selectedWeatherData = dayData.first; // По умолчанию первое время дня
-                          });
-                        },
-                        child: Container(
-                          width: 100,
-                          margin: EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: selectedDay == day
-                                ? Colors.blueAccent.withOpacity(0.5)
-                                : Colors.grey.withOpacity(0.3),
-                            borderRadius: BorderRadius.circular(12.0),
-                            border: Border.all(color: Colors.grey[600]!, width: 2.0),
-                          ),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text(
-                                date,
-                                style: TextStyle(color: Colors.white),
-                              ),
-                              Text(
-                                '$celsius°C',
-                                style: TextStyle(color: Colors.white),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ),
-              SizedBox(height: 10), // Отступ между контейнерами
-
-              // Контейнер 5: Свайпать между городами (1 часть)
-              Flexible(
-                flex: 1,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.grey.withOpacity(0.3), // Полупрозрачный серый фон
-                    border: Border.all(color: Colors.grey[600]!, width: 2.0), // Выделенные края
-                  ),
-                  child: Center(
-                    child: Text(
-                      '<—————————————————>',
-                      style: TextStyle(fontSize: 24, color: Colors.white),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 10),
+            Flexible(flex: 4, child: Container()),
+            const SizedBox(height: 10),
+            Flexible(flex: 4, child: Container()),
+          ],
         ),
       ),
     );

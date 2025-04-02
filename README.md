@@ -1,16 +1,9 @@
-# weather_te
+# Лучший проект про Погоду чек
 
-TE
+1. Хатыпов Камиль
+2. Flutter
+3. Мобильное приложение позволяющее узнать погоду на предстоящие 5 дней с частотой каждые 3 часа. Отличительной чертой является приятный дизайн, который **зависит от времени суток**. 
+4. Установите APK, готово.
+5. Доступно всем(APIKey увы доступен всему интернету теперь)
+6. Нажать на иконку приложения и наслаждаться. Города перелистываются если что, а чтобы добавить новый город, нужно листать максимально в конец. 
 
-## Getting Started
-
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
